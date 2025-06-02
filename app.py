@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from qwen_agent.llm import get_chat_model
 import yaml
+import time
 
 from smolagents import (
     LiteLLMModel, CodeAgent, DuckDuckGoSearchTool, VisitWebpageTool
@@ -45,20 +46,20 @@ def call_the_agent(query: str, url: str = None):
         num_ctx=int(os.getenv("OLLAMA_AGENT_MAX_TOKENS")),
     )
 
-    final_answer = FinalAnswerTool()
+    # final_answer = FinalAnswerTool()
 
-    with open("prompts.yaml", 'r') as stream:
-        prompt_templates = yaml.safe_load(stream)
+    # with open("prompts.yaml", 'r') as stream:
+    #     prompt_templates = yaml.safe_load(stream)
 
     custom_agent = CodeAgent(
         name=os.getenv("OLLAMA_AGENT_NAME"),
         description=os.getenv("OLLAMA_AGENT_DESCRIPTION"),
         model=model_ollama,
-        tools=[DuckDuckGoSearchTool(), VisitWebpageTool()],
-        add_base_tools=True,
+        tools=[DuckDuckGoSearchTool()],
+        add_base_tools=False,
         max_steps=10,
         verbosity_level=0,
-        prompt_templates=prompt_templates,
+        # prompt_templates=prompt_templates,
         additional_authorized_imports=[
             "requests", "bs4", "datetime", "matplotlib.pyplot", "pytz", "csv", "yaml", "io", "os",
             "posixpath", "zlib", "json", "pandas",
@@ -198,29 +199,37 @@ messages = MESSAGES[:]
 
 functions = [tool["function"] for tool in TOOLS]
 
-for responses in llm.chat(
-    messages=messages,
-    functions=functions,
-    extra_generate_cfg=dict(parallel_function_calls=True),
-):
-    pass
+last_content = ""
 
-messages.extend(responses)
+for chunk in llm.chat(messages=messages, functions=functions, stream=True):
+    if isinstance(chunk, list) and len(chunk) > 0:
+        message = chunk[0]
+        if message.get("role") == "assistant":
+            content = message.get("content", "")
+            delta = content[len(last_content):]
+            print(delta, end="", flush=True)
+            time.sleep(0.01)
+            last_content = content
 
-for message in responses:
-    if fn_call := message.get("function_call", None):
-        fn_name: str = fn_call['name']
-        fn_args: dict = json.loads(fn_call["arguments"])
-        fn_res: str = json.dumps(get_function_by_name(fn_name)(**fn_args), ensure_ascii=False)
-        messages.append({
-            "role": "function",
-            "name": fn_name,
-            "content": fn_res,
+messages.extend(chunk)
 
-        })
+if messages[-1].get('function_call'):
+    print("\n\nChamando funcao " + str(messages[-1].get('function_call')['name']) + "\n\n")
 
-# for responses in llm.chat(messages=messages, functions=functions):
-#     pass
-# messages.extend(responses)
+    for message in chunk:
+        if fn_call := message.get("function_call", None):
+            fn_name: str = fn_call['name']
+            fn_args: dict = json.loads(fn_call["arguments"])
+            fn_res: str = json.dumps(get_function_by_name(fn_name)(**fn_args), ensure_ascii=False)
+            messages.append({
+                "role": "function",
+                "name": fn_name,
+                "content": fn_res,
 
-print(messages[-1]["content"])
+            })
+
+    for responses in llm.chat(messages=messages, functions=functions):
+        pass
+    messages.extend(responses)
+
+    print(messages[-1]["content"])

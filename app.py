@@ -2,23 +2,74 @@ import json
 import os
 from dotenv import load_dotenv
 from qwen_agent.llm import get_chat_model
+import yaml
+
+from smolagents import (
+    LiteLLMModel, CodeAgent, DuckDuckGoSearchTool, VisitWebpageTool
+)
+from tools.final_answer import FinalAnswerTool
 
 load_dotenv('./.env')
 
-llm = get_chat_model({
+user_input = input("User input: ")
+
+llm_cfg = {
     "model": os.getenv("OLLAMA_MODEL"),
-    "model_server": os.getenv("OLLAMA_ENDPOINT"),
+    "model_server": os.getenv("OLLAMA_MODEL_ENDPOINT") + "/v1",
     "api_key": os.getenv("OLLAMA_KEY"),
-})
+    "generate_cfg": {
+        "max_tokens": int(os.getenv("OLLAMA_MODEL_MAX_TOKENS", 2048)),
+        "temperature": 0.1,
+        "top_p": 0.95,
+        "top_k": 40,
+        "repetition_penalty": 1.1,
+    }
+}
+
+llm = get_chat_model(llm_cfg)
 
 
-def today_passkey():
+def call_the_agent(query: str, url: str = None):
     """
-    Get today's passkey.
+    Call an agent to search the web for updated information or access a webpage url.
+    Args:
+        query: The query to search for, in str
+        url: The URL to visit, if applicable
     Returns:
-        the passkey for today, in str
+        the response from the agent, in str
     """
-    return "blablabla-102030"
+    model_ollama = LiteLLMModel(
+        model_id="ollama_chat/" + os.getenv("OLLAMA_AGENT_MODEL"),
+        api_base=os.getenv("OLLAMA_AGENT_ENDPOINT"),
+        temperature=0.1,
+        num_ctx=int(os.getenv("OLLAMA_AGENT_MAX_TOKENS")),
+    )
+
+    final_answer = FinalAnswerTool()
+
+    with open("prompts.yaml", 'r') as stream:
+        prompt_templates = yaml.safe_load(stream)
+
+    custom_agent = CodeAgent(
+        name=os.getenv("OLLAMA_AGENT_NAME"),
+        description=os.getenv("OLLAMA_AGENT_DESCRIPTION"),
+        model=model_ollama,
+        tools=[DuckDuckGoSearchTool(), VisitWebpageTool()],
+        add_base_tools=True,
+        max_steps=10,
+        verbosity_level=0,
+        prompt_templates=prompt_templates,
+        additional_authorized_imports=[
+            "requests", "bs4", "datetime", "matplotlib.pyplot", "pytz", "csv", "yaml", "io", "os",
+            "posixpath", "zlib", "json", "pandas",
+        ],
+    )
+
+    final_agent_output = custom_agent.run(
+        query
+    )
+
+    return str(final_agent_output)
 
 
 def get_current_temperature(location: str, unit: str = "celsius"):
@@ -62,8 +113,8 @@ def get_function_by_name(name):
         return get_current_temperature
     if name == "get_temperature_date":
         return get_temperature_date
-    if name == "today_passkey":
-        return today_passkey
+    if name == "call_the_agent":
+        return call_the_agent
 
 
 TOOLS = [
@@ -118,15 +169,29 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "today_passkey",
-            "description": "Get today's passkey.",
+            "name": "call_the_agent",
+            "description": "Call an agent to perform complex tasks such as searching the web for updated information.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The query to search for, in str",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to visit, if applicable",
+                    },
+                },
+                "required": ["query"],
+            },
         },
     },
 ]
 
 MESSAGES = [
-    {"role": "system", "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\nCurrent Date: 2024-09-30"},
-    {"role": "user",  "content": input("User: ")},
+    {"role": "system", "content": os.getenv("OLLAMA_MODEL_SYSTEM_PROMPT")},
+    {"role": "user",  "content": user_input},
 ]
 
 messages = MESSAGES[:]
@@ -139,14 +204,14 @@ for responses in llm.chat(
     extra_generate_cfg=dict(parallel_function_calls=True),
 ):
     pass
+
 messages.extend(responses)
 
 for message in responses:
-
     if fn_call := message.get("function_call", None):
         fn_name: str = fn_call['name']
         fn_args: dict = json.loads(fn_call["arguments"])
-        fn_res: str = json.dumps(get_function_by_name(fn_name)(**fn_args))
+        fn_res: str = json.dumps(get_function_by_name(fn_name)(**fn_args), ensure_ascii=False)
         messages.append({
             "role": "function",
             "name": fn_name,
@@ -154,8 +219,8 @@ for message in responses:
 
         })
 
-for responses in llm.chat(messages=messages, functions=functions):
-    pass
-messages.extend(responses)
+# for responses in llm.chat(messages=messages, functions=functions):
+#     pass
+# messages.extend(responses)
 
-print(messages)
+print(messages[-1]["content"])

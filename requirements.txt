@@ -1,1 +1,7 @@
 qwen-agent
+markdownify
+smolagents
+requests
+duckduckgo_search
+pandas
+dotenv
